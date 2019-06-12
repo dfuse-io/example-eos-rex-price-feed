@@ -10,6 +10,8 @@ import { Api, JsonRpc } from 'eosjs';
 import fetch from 'node-fetch'
 import { JsSignatureProvider } from 'eosjs/dist/eosjs-jssig';
 import { TextEncoder, TextDecoder } from 'util';
+import { SubscriptionClient } from "subscriptions-transport-ws";
+import debugFactory from "debug"
 
 (global as any).WebSocket = ws;
 (global as any).fetch = nodeFetch;
@@ -18,6 +20,8 @@ if (process.env.DFUSE_API_KEY == null) {
   console.log("Missing DFUSE_API_KEY environment variable")
   process.exit(1)
 }
+
+const debug = debugFactory("dfuse:example")
 
 async function main() {
   const signatureProvider = new JsSignatureProvider([]);
@@ -29,26 +33,41 @@ async function main() {
     network: "mainnet",
   });
 
+  const subscriptionClient = new SubscriptionClient(dfuseClient.endpoints.graphqlStreamUrl, {
+    reconnect: true,
+    connectionCallback: (error?: any) => {
+      if (error) {
+        console.log("Unable to correctly initialize connection", error)
+        process.exit(1)
+      }
+    },
+    connectionParams: async () => {
+      const { token } = await dfuseClient!.getTokenInfo();
+
+      return {
+        Authorization: `Bearer ${token}`
+      }
+    }
+  }, ws);
+
+  subscriptionClient.onConnecting(() => { debug("Connecting") })
+  subscriptionClient.onConnected(() => { debug("Connected") })
+  subscriptionClient.onReconnecting(() => { debug("Reconnecting") })
+  subscriptionClient.onReconnected(() => { debug("Reconnected") })
+  subscriptionClient.onDisconnected(() => { debug("Disconnected") })
+  subscriptionClient.onError((error) => { debug("Error", error) })
+
   const apolloClient = new ApolloClient({
     cache: new InMemoryCache(),
-    link: new WebSocketLink({
-      uri: dfuseClient.endpoints.graphqlStreamUrl,
-      options: {
-        connectionParams: async () => {
-          const apiToken = await dfuseClient.getTokenInfo()
-
-          return {
-            Authorization: `Bearer ${apiToken.token}`
-          };
-        }
-      },
-      webSocketImpl: ws,
-    }),
+    link: new WebSocketLink(subscriptionClient),
   });
 
-  // Would need to deal with this. Best thing probably is to first use dfuse SQE
-  // `action:setabi account:eosio data.account:eosio` to track all changes and
-  // load the ABI for all these blocks through dfuse API.
+  // Would need to deal with the fact that this can be updated through
+  // the lifecycle of the chain, so at various blocks. Best thing probably is
+  // to first use dfuse SQE `action:setabi account:eosio data.account:eosio`
+  // to track all changes and load the ABI for all these blocks through dfuse API.
+  //
+  // Then use the right ABI for the right block range.
   const abi = await api.getAbi("eosio")
   const builtinTypes = createInitialTypes()
   const types = getTypesFromAbi(builtinTypes, abi)
@@ -60,17 +79,25 @@ async function main() {
   }
 
   return new Promise((resolve, reject) => {
-    console.log("Subscribing to REX feed")
+    debug("Subscribing to REX feed")
 
+    let activeCursor = ""
     let currentBlock = 0
 
     apolloClient.subscribe({
-      query: getRexPoolQuery
+      query: getRexPoolQuery,
+      variables: {
+        cursor: activeCursor,
+        lowBlockNum: 61_500_000,
+        highBlockNum: 0,
+      }
     }).subscribe({
-      start: (subscription) => { console.log("Started", subscription) },
+      start: (subscription) => { debug("Started", subscription) },
       next: (value) => {
-        const trace = value.data.searchTransactionsForward.trace;
+        debug("Received message")
+        const message = value.data.searchTransactionsForward;
 
+        const trace = message.trace
         if (currentBlock < trace.block.num) {
           const matchingAction = trace.matchingActions[0]
           const rexPoolDbOp = matchingAction.dbOps.find(isRexpoolDbOp)
@@ -80,6 +107,8 @@ async function main() {
 
           currentBlock = trace.block.num
         }
+
+        activeCursor = message.cursor
       },
       error: (error) => { reject(error) },
       complete: () => { resolve() },

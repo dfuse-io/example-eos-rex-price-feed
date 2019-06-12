@@ -1,11 +1,12 @@
 import gql from "graphql-tag";
 
 export const getRexPoolQuery = gql`
-  subscription {
+  subscription($cursor: String!, $lowBlockNum: Int64!, $highBlockNum: Int64!) {
     searchTransactionsForward(
+      cursor: $cursor,
       query: "account:eosio receiver:eosio db.table:rexpool/eosio",
-      lowBlockNum: 61500000,
-      highBlockNum: 62000000
+      lowBlockNum: $lowBlockNum,
+      highBlockNum: $highBlockNum
     ) {
       cursor
       trace {
