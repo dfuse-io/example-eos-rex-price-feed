@@ -35,10 +35,10 @@ async function main() {
 
   const subscriptionClient = new SubscriptionClient(dfuseClient.endpoints.graphqlStreamUrl, {
     reconnect: true,
+    lazy: true,
     connectionCallback: (error?: any) => {
       if (error) {
-        console.log("Unable to correctly initialize connection", error)
-        process.exit(1)
+        console.log("Problem initializing re-connection", error)
       }
     },
     connectionParams: async () => {
